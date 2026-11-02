@@ -356,8 +356,8 @@ def _validate(raw: dict) -> dict:
     if rep_auto != bh_auto:
         log.warning(
             "Config [reputation] auto_blackhole=%s and [blackhole] auto_blackhole=%s "
-            "disagree — either setting enables auto-blackholing. Set both to the same "
-            "value to avoid confusion.",
+            "disagree. Automatic enforcement uses [reputation]; the duplicate "
+            "[blackhole] fields are currently unused.",
             rep_auto, bh_auto,
         )
 

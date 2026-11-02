@@ -27,8 +27,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://ratspeak.org"
-Repository = "https://github.com/ratspeak/rathole-py"
-Issues = "https://github.com/ratspeak/rathole-py/issues"
+Repository = "https://github.com/ratspeak/rathole"
+Issues = "https://github.com/ratspeak/rathole/issues"
 
 [project.optional-dependencies]
 metrics = ["prometheus_client>=0.19"]

@@ -119,7 +119,7 @@ def main():
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Log filter verdicts without actually blocking announces",
+        help="Report filter-pipeline blocks without enforcing them; blackhole checks can still block",
     )
     parser.add_argument(
         "-v", "--verbose",

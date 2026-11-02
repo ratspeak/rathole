@@ -1,7 +1,11 @@
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  RATHOLE — Security Suite for Reticulum Transport Nodes       ║
+# ║  RATHOLE — Packet Filters for Reticulum Transport Nodes        ║
 # ║  Configuration Reference                                       ║
 # ╚══════════════════════════════════════════════════════════════════╝
+
+# Base configuration. Presets and the setup wizard can override these values.
+# Read README.md for implementation limits before enabling enforcement.
+# Live CLI changes are not saved here automatically.
 
 # ─── General ──────────────────────────────────────────────────────
 
@@ -15,16 +19,18 @@
 # Client — Contributing transport node (local mesh, joins networks).
 #   Standard rate limits, simpler setup, gentler defaults.
 #
-# Set during 'rat setup' or change here. Affects which presets are
-# available and default tuning for all filters.
+# Set during 'rat setup' or change here. Selects mode/preset presentation.
+# Changing this value alone does not retune the filters: apply a preset or
+# set the individual limits below.
 node_mode = "client"
 
 # Path to the Reticulum config directory. If empty, uses default
 # (~/.reticulum or /etc/reticulum depending on platform).
 reticulum_config_path = ""
 
-# Enable dry-run mode globally. In dry-run, Rathole logs all
-# verdicts but never actually drops or throttles announces.
+# Dry-run converts filter-pipeline blocks into ACCEPT verdicts.
+# Networking, state recording and registry announces can still occur.
+# The router blackhole check precedes this override and can still block.
 dry_run = false
 
 # How often (seconds) to write peer state snapshots to disk.
@@ -38,7 +44,7 @@ state_file = "~/.rathole/state.json"
 # Log level: DEBUG, INFO, WARNING, ERROR
 log_level = "INFO"
 
-# Log file. Empty string = stdout.
+# Log file. Empty string uses stderr in headless mode or the TUI Console tab.
 log_file = ""
 
 # Control socket for rat commands.
@@ -73,7 +79,8 @@ control_socket = "/tmp/rathole.sock"
 #
 # Token-bucket rate limiting per network interface. Limits the
 # total packet rate from any single interface regardless of type.
-# Protects against packet floods from a compromised or noisy peer.
+# Drops traffic above the configured allowance; legitimate bursts can also
+# exceed it. This does not prevent saturation of the underlying connection.
 
 [filters.interface_rate]
 enabled = true
@@ -84,14 +91,16 @@ refill_rate = 10.0
 # Maximum burst size (bucket capacity).
 burst = 50
 
-# Action when rate exceeded: "drop" or "throttle"
+# Action when rate exceeded: "drop" or "throttle". Both currently block
+# the packet; "throttle" does not queue it for later delivery.
 overflow_action = "drop"
 
 
 # ─── G2. Bandwidth Cap ────────────────────────────────────────
 #
 # Per-interface byte-rate cap using a token bucket measured in
-# bytes. Prevents any single interface from consuming all bandwidth.
+# bytes. Limits what passes the filter, not bandwidth already consumed
+# receiving the packet.
 
 [filters.bandwidth]
 enabled = true
@@ -122,56 +131,55 @@ max_bytes = 600
 
 # ─── A1. Allow / Deny Lists ──────────────────────────────────────
 #
-# Hard overrides. Checked first so trusted peers bypass all other
-# filters, and known-bad actors get dropped immediately.
+# Checked first within the announce pipeline, after global filters.
+# An allow match takes priority over a deny match in this filter only;
+# later filters still run. Header hashes have not yet been RNS-validated.
 
 [filters.allowdeny]
 enabled = true
 
-# Destination hashes that are always accepted (hex strings).
-# Announces FROM these destinations skip all further filtering.
+# Destination hashes that bypass this filter's deny checks (hex strings).
 allow_destinations = [
     # "a1b2c3d4e5f6...",
 ]
 
-# Peer identity hashes whose announces are always accepted.
+# Peer-tracking hashes that bypass this filter's deny checks. For parsed
+# announces, tracking uses the destination hash, not the identity hash.
 allow_peers = [
     # "f6e5d4c3b2a1...",
 ]
 
-# Destination hashes that are always dropped.
+# Destination hashes to deny unless also allowed above.
 deny_destinations = []
 
-# Peer identity hashes whose announces are always dropped.
+# Peer-tracking hashes to deny unless also allowed above.
 deny_peers = []
 
 
 # ─── A2. Hop Ceiling ─────────────────────────────────────────────
 #
 # Drops any announce with a hop count exceeding the ceiling.
-# Most legitimate mesh topologies stay under 8-10 hops.
-# Anything deeper is likely a chained Sybil topology or a
-# misconfigured network that shouldn't be your problem.
+# Choose a limit that accommodates the paths your network needs.
+# Hop count alone does not establish malicious behavior.
 
 [filters.hop_ceiling]
 enabled = true
 
 # Maximum allowed hop count. Announces above this are dropped.
-# Default 32 — generous for real topologies (rarely exceed 10-12 hops)
-# while blocking deep-chain amplification. RNS protocol max is 128.
+# Base limit: 32. Lower values can exclude legitimate distant nodes.
 max_hops = 32
 
 
 # ─── A3. Announce Size Limit ────────────────────────────────────
 #
-# Limits the size of announce app_data. Oversized announces waste
-# bandwidth and may be used for data exfiltration or amplification.
+# Compares the hook's estimated announce app_data size with a limit.
+# This estimate is not a decoded or validated payload length; IFAC
+# packets skip this extraction.
 
 [filters.announce_size]
 enabled = true
 
-# Maximum app_data size in bytes. Announces with larger app_data
-# are dropped. Most legitimate announces are under 256 bytes.
+# Maximum estimated app_data size in bytes.
 max_app_data_bytes = 500
 
 
@@ -194,20 +202,21 @@ burst = 15
 
 # What to do when a destination exceeds its budget:
 #   "drop"     — silently discard excess announces
-#   "throttle" — queue and release slowly (uses more memory)
+#   "throttle" — block with a THROTTLE verdict (no delivery queue)
 overflow_action = "drop"
 
 
 # ─── A5. Announce Churn Dampening ─────────────────────────────────
 #
 # Inspired by BGP route flap dampening (RFC 2439). Tracks per-
-# destination penalty scores. Each new announce of an already-known
-# destination increments the penalty. Penalty decays over time.
+# destination penalty scores. An unsuppressed announce (including one
+# admitted after reuse) adds a penalty, which decays over time. Announces
+# dropped while the destination remains suppressed do not add a penalty.
 # When penalty exceeds `suppress_threshold`, that destination's
 # announces are suppressed until it decays below `reuse_threshold`.
 
 [filters.churn]
-enabled = true
+enabled = false
 
 # Penalty added per re-announce of the same destination.
 penalty_per_announce = 1.0
@@ -218,7 +227,7 @@ decay_factor = 0.5
 decay_interval = 120  # 2 min — quick recovery for normal traffic
 
 # Suppress announces when penalty reaches this level.
-suppress_threshold = 15.0  # High enough that normal re-announces don't trigger
+suppress_threshold = 15.0
 
 # Re-enable announces when penalty decays to this level.
 reuse_threshold = 3.0
@@ -231,8 +240,8 @@ max_penalty = 20.0
 #
 # Interface-level windowed traffic ratio analysis. Monitors the
 # announce-to-data ratio per interface using windowed counters
-# (reset each correlator interval). Prevents false positives on
-# hub connections where all announces arrive through one interface.
+# (reset by the correlator interval). Quiet networks and initial
+# synchronization can have high announce ratios without an attack.
 
 [filters.anomaly]
 enabled = true
@@ -242,12 +251,12 @@ enabled = true
 max_announce_ratio = 100.0
 
 # Minimum packets in the current window before evaluating the ratio.
-# Prevents false positives during initial routing table sync.
+# Delays evaluation while the sample is small.
 min_packets = 50
 
 # Action when anomaly detected:
-#   "flag"     — log a warning but don't drop (safe default)
-#   "throttle" — reduce announce throughput on that interface
+#   "flag"     — accept; the current pipeline discards the flag metadata
+#   "throttle" — block matching announces with a THROTTLE verdict
 #   "drop"     — drop all announces on that interface until ratio improves
 anomaly_action = "flag"
 
@@ -257,8 +266,7 @@ anomaly_action = "flag"
 # stabilize. Matches the correlator grace_period.
 grace_period = 300
 
-# Note: throttle_factor was removed in v1.0.1 — anomaly throttling
-# operates at the interface level and does not use a per-peer factor.
+# No throttle_factor parameter is used by this implementation.
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -270,12 +278,14 @@ grace_period = 300
 #
 # Rate limits path requests per interface and detects destination
 # scanning (many unique destination hashes in a short window).
-# Scanning is a precursor to targeted attacks.
+# A scan alert is a traffic heuristic, not proof of an attack.
 
 [filters.path_request]
 enabled = true
 
-# Maximum path requests per minute per interface.
+# Request-count limit per interface. The implementation counts entries
+# retained for max(60, scan_window) seconds, so larger scan_window values
+# also extend the effective rate window.
 max_per_minute = 30
 
 # Number of unique destination hashes from one interface within
@@ -295,8 +305,8 @@ scan_window = 60
 # ─── L1. Link Request Rate Limit & Pending Cap ────────────────
 #
 # Rate limits link establishment requests per interface and caps
-# the number of pending (half-open) links. ECDH key exchange is
-# computationally expensive — flooding link requests is a DoS vector.
+# an approximate pending-link counter. The counter decays every minute;
+# it is not updated from actual link completion callbacks.
 
 [filters.link_request]
 enabled = true
@@ -307,8 +317,8 @@ refill_rate = 1.0
 # Maximum burst of link requests.
 burst = 10
 
-# Maximum pending (unestablished) links per interface. Once this
-# limit is reached, new link requests from that interface are dropped.
+# Maximum approximate pending count per interface. Once this limit is
+# reached, new link requests are dropped until the count falls.
 max_pending_per_interface = 50
 
 
@@ -319,16 +329,18 @@ max_pending_per_interface = 50
 
 # ─── D1. Resource Guard ───────────────────────────────────────
 #
-# Limits concurrent resource transfers per interface and enforces
-# maximum resource size. Prevents resource/compression bombs.
+# Incomplete: the current raw inbound hook does not extract resource
+# subtypes. Even when passed a resource context, this filter compares
+# packet length, not the decoded advertised transfer size. Do not rely
+# on it to prevent decompression bombs or enforce transfer-size limits.
 
 [filters.resource_guard]
 enabled = true
 
-# Maximum resource size in bytes (default 16 MB).
+# Raw-size comparison setting in bytes (16 MiB). Not a transfer limit.
 max_resource_bytes = 16_777_216
 
-# Maximum concurrent active resource transfers per interface.
+# Approximate resource-count threshold; counters decay periodically.
 max_active_per_interface = 10
 
 
@@ -339,9 +351,9 @@ max_active_per_interface = 10
 
 # ─── Identity Reputation ──────────────────────────────────────────
 #
-# Per-identity scoring (0.0 = untrusted, 1.0 = trusted). High-rep
-# peers get larger rate limit buckets; low-rep peers get stricter
-# filtering. Scores decay toward neutral without activity.
+# Scores for tracked hashes, from 0.0 to 1.0. Scores decay toward
+# neutral without activity. Current rate-limit buckets do not use them.
+# Header-derived attribution happens before RNS signature validation.
 
 [reputation]
 enabled = true
@@ -350,7 +362,7 @@ enabled = true
 neutral_score = 0.5
 
 # Score changes per verdict. 3:1 penalty-to-reward ratio:
-# 1 drop = 3 accepts to recover.
+# Announce drops receive penalties; accepted verdicts receive rewards.
 accept_reward = 0.005
 drop_penalty = 0.015
 throttle_penalty = 0.01
@@ -369,26 +381,26 @@ auto_blackhole_score = 0.15
 # ─── Blackhole Integration ───────────────────────────────────────
 #
 # Bidirectional sync with RNS Transport.blackholed_identities.
-# Blackholed identities have ALL traffic dropped at the transport level.
+# The router blocks matching peer-tracking hashes before its pipelines;
+# RNS also applies its own blackhole rules.
 
 [blackhole]
 
 # How often (seconds) to sync with the RNS blackhole list.
 sync_interval = 60
 
-# Auto-blackhole identities with low reputation scores.
-# NOTE: This mirrors [reputation].auto_blackhole — either setting
-# enables auto-blackholing. Keep both in sync to avoid confusion.
-# A validation warning is logged if the two sections disagree.
+# These duplicate auto-blackhole fields are currently unused by enforcement.
+# Set [reputation].auto_blackhole and its score threshold to control automatic
+# blackholing. The two sections are stored separately.
 auto_blackhole = false
 auto_blackhole_score = 0.15
 
 
 # ─── Adaptive Thresholds ─────────────────────────────────────────
 #
-# Learns baseline traffic patterns per interface, then dynamically
-# adjusts thresholds. Uses rolling mean + standard deviation.
-# Manual config thresholds ALWAYS override adaptive values.
+# Collects per-interface counters and computes mean/stddev thresholds.
+# The current filter implementations do not consume these thresholds;
+# enabling this monitor does not automatically tune enforcement.
 
 [adaptive]
 
@@ -396,7 +408,7 @@ auto_blackhole_score = 0.15
 enabled = false
 
 # Hours to learn baseline before generating thresholds.
-learning_hours = 24
+learning_hours = 6
 
 # Standard deviations above mean for alert threshold.
 alert_sigma = 3.0
@@ -438,8 +450,8 @@ amplification_ratio = 50.0
 
 # Response mode:
 #   "alert"     — log alerts only (safe default)
-#   "defensive" — auto-respond to detected patterns (reputation penalties,
-#                 threshold tightening). Respects dry-run mode.
+#   "defensive" — invoke response logging with recommendations. Current
+#                 handlers do not tighten thresholds or penalize peers.
 response_mode = "alert"
 
 # Seconds before the same pattern can re-trigger on the same interface.
@@ -462,7 +474,9 @@ grace_period = 300
 # Enable Prometheus-compatible metrics endpoint.
 enabled = false
 
-# Bind address for metrics HTTP server.
+# Starting bind address for the metrics HTTP server. If the port is busy,
+# the server tries up to 10 consecutive ports; check its startup log for
+# the endpoint that actually opened.
 bind = "127.0.0.1:9777"
 
 # Expose per-peer breakdown (can be verbose with many peers).
@@ -484,15 +498,16 @@ db_path = "~/.rathole/events.db"
 # Auto-prune events older than this many days.
 retention_days = 7
 
-# Maximum events to store (oldest pruned first).
+# Reserved count limit; currently not enforced. Pruning uses retention_days.
 max_events = 100_000
 
 
 # ─── Alert Rules ──────────────────────────────────────────────────
 #
-# Configurable condition → action mappings. Rules match against
-# incoming security events and fire actions (log, webhook, command).
-# Cooldown prevents alert storms. Severity escalation on repeat.
+# Rules match incoming security events and log the result. Webhook and
+# command actions are log-only placeholders; they do not send requests or
+# execute commands. Cooldown suppresses repeated actions. Repeated matches
+# can be marked escalated, without changing the event severity.
 
 [alerts]
 enabled = false
@@ -511,7 +526,7 @@ enabled = false
 # name = "scan_detected"
 # event_types = ["SCAN_DETECTED"]
 # min_severity = "ALERT"
-# action = "webhook"
+# action = "webhook"  # logs the intended action only; no HTTP request
 # action_target = "https://hooks.example.com/rathole"
 # cooldown = 600
 
@@ -525,10 +540,11 @@ enabled = false
 #
 # Publishing: requires I2P to be configured (I2PInterface in RNS config).
 # The gateway's B32 address, name, and capabilities are encoded in
-# the announce's app_data (msgpack). RNS handles signing — the
-# registry server verifies identity cryptographically.
+# the announce's app_data (msgpack). RNS signs these announces;
+# receivers can verify the announcing identity.
 #
-# Discovery: HTTP GET against the registry API (no RNS needed).
+# Discovery: HTTP GET against the registry API (no RNS needed for that
+# request). The HTTPS endpoint can see the request's source IP.
 
 [registry]
 
@@ -540,8 +556,8 @@ discover_url = "https://registry.ratspeak.org/api/v1"
 
 # Publish this node by announcing on the Reticulum network.
 # Gateway operators should enable this so clients can discover them.
-# Requires a connectable I2P interface and connection to the hub
-# (rns.ratspeak.org:4242).
+# Requires an I2P B32 address and a Reticulum path to the registry node.
+# A direct TCP bootstrap peer sees your source IP; see README.md.
 publish = false
 
 # Query the registry HTTP API for other gateways.
@@ -555,7 +571,7 @@ auto_connect = false
 max_auto_connect = 5
 
 # How often (seconds) to re-announce.
-# Registry entries go stale after 3× this interval with no announce.
+# Server-side expiry is separate from this client interval.
 announce_interval = 300
 
 # How often (seconds) to query the registry for new gateways.

@@ -2596,11 +2596,11 @@ def main():
     parser.add_argument(
         "-s", "--socket",
         default=DEFAULT_SOCKET,
-        help=f"Control socket path (default: {DEFAULT_SOCKET})",
+        help=f"Control socket address (local rathole.toml can override the default: {DEFAULT_SOCKET})",
     )
     parser.add_argument(
         "--refresh", type=float, default=5.0,
-        help="Refresh interval in seconds (default: 5.0)",
+        help="Automatic refresh interval in seconds (default: 5.0); the Peers tab has a separate 60-second refresh threshold",
     )
     args = parser.parse_args()
 

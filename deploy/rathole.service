@@ -1,7 +1,7 @@
 [Unit]
 Description=Rathole Security Suite for Reticulum
 After=network.target
-Documentation=https://github.com/ratspeak/rathole-py
+Documentation=https://github.com/ratspeak/rathole
 
 [Service]
 Type=simple

@@ -15,112 +15,92 @@
 <div align="center">
 <table>
 <tr>
-<td align="center"><b>Overview</b><br><br><img src="docs/screenshots/overview.svg" width="480"></td>
-<td align="center"><b>Peers</b><br><br><img src="docs/screenshots/peers.svg" width="480"></td>
+<td align="center"><b>Overview</b><br><br><img src="docs/screenshots/overview.svg" alt="Historical overview dashboard capture" width="480"></td>
+<td align="center"><b>Peers</b><br><br><img src="docs/screenshots/peers.svg" alt="Historical peers dashboard capture" width="480"></td>
 </tr>
 <tr><td colspan="2"></td></tr>
 <tr>
-<td align="center"><b>Interfaces</b><br><br><img src="docs/screenshots/interfaces.svg" width="480"></td>
-<td align="center"><b>Blackhole</b><br><br><img src="docs/screenshots/blackhole.svg" width="480"></td>
+<td align="center"><b>Interfaces</b><br><br><img src="docs/screenshots/interfaces.svg" alt="Historical interfaces dashboard capture" width="480"></td>
+<td align="center"><b>Blackhole</b><br><br><img src="docs/screenshots/blackhole.svg" alt="Historical blackhole dashboard capture" width="480"></td>
 </tr>
 </table>
 </div>
 
-Rathole is a transport node and security suite for [Reticulum](https://reticulum.network). It auto-configures a full transport node, wraps it in 12 security filters, and optionally hides it behind [I2P](https://i2p.net/en/) — so anyone can run a public gateway from home without exposing their IP. Zero file editing: configure with a CLI wizard, operate with a full-screen TUI.
+These dashboard captures illustrate the interface. Their addresses, counters and alerts are historical; an alert label is not a verified attack report.
 
-## Why
-
-Reticulum's transport layer depends on a small number of public gateways. If a few go offline, large parts of the mesh lose connectivity. The fix is obvious: more gateways, run by more people, in more places.
-
-But running a gateway means exposing your IP to every node that connects. Most people won't do that from home.
-
-Rathole solves both problems:
-
-- **It is a transport node.** Not a bolt-on — Rathole auto-enables transport mode, configures Reticulum, and runs a full `rnsd`-equivalent stack.
-- **I2P built-in.** Run a publicly reachable gateway without exposing your IP address. The setup wizard handles i2pd installation and configuration.
-- **Auto-discovery.** Gateways optionally publish their I2P address to a shared registry. Clients query the registry and connect automatically. No manual address swapping.
-- **12 security guards.** All inbound packets pass through a filter pipeline before propagating. Rate limiting, reputation tracking, anomaly detection, attack correlation — managed through a CLI wizard and full-screen TUI.
-
-Zero file editing required. Three commands to go from nothing to a secured transport node.
+Rathole runs Python Reticulum with configurable packet filters, a terminal dashboard and optional I2P peering. It is a proof of concept: the filters inspect traffic before normal RNS validation, and several monitoring features are approximate or incomplete. Review the limits below before relying on it for a public gateway.
 
 ## Install
 
-### macOS
+Install Python 3.11 or newer and Git. On Debian/Ubuntu, include `python3-venv`; on macOS, Homebrew's `python3` package supplies Python. From a terminal:
 
 ```bash
-brew install python3
-pip install -e ".[all]"
+git clone https://github.com/ratspeak/rathole.git
+cd rathole
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -e ".[all]"
 ```
 
-### Linux (Debian/Ubuntu)
+On Windows, create the environment with `py -3 -m venv .venv` and activate it in PowerShell with `.venv\Scripts\Activate.ps1`, then run the same pip command.
 
-```bash
-sudo apt install python3 python3-pip
-pip install -e ".[all]"
-```
-
-### Windows
-
-Install Python 3.11+ from [python.org](https://www.python.org/downloads/), then:
-
-```bash
-pip install -e ".[all]"
-```
+Rathole hooks Python RNS internals. Its dependency declaration (`rns>=0.7.0`) is not a tested compatibility range. Record the RNS version in your working environment with `python -m pip show rns` and check compatibility before upgrading it.
 
 ## Quick Start
 
+```bash
+rat setup
+rat run
+```
 
-`rat setup` walks you through node mode (gateway or client), preset selection, I2P configuration, and registry opt-in. It writes `rathole.toml` — you never need to edit it by hand.
+The wizard asks for a Reticulum config directory, network interfaces, a gateway/client preset and optional I2P and registry settings. It writes `rathole.toml` in the current directory and offers to start the daemon. If you accept that offer, run `rat run` only after exiting it.
 
-`rat run` runs the client or gateway if you quit and want to run it again later.
+Back up an existing Reticulum configuration first: setup can change its interfaces and transport setting. Rathole also attempts to enable transport at startup, including in its **client** mode. Run it with its own Reticulum instance; attaching to another shared daemon does not put Rathole's hooks into that daemon.
 
-`rat reset` resets (optionally) all of your config and data.
+Start with `observe` (gateway) or `relaxed` (client) to review filter verdicts in dry-run mode. Dry-run still starts networking, records state and may publish registry announces. Existing blackhole rules are checked before the dry-run filter override, so this is not a guarantee that all packets pass.
+
+Use `rat status` in another activated terminal to inspect the running daemon. If you chose a nondefault control socket, supply it with `rat --socket /path/to/socket status`. Exit the dashboard or use `rat shutdown` to stop it.
+
+`rat reset` is destructive: it can remove the data directory, config and, if selected, the Reticulum directory and identity. Read the displayed paths and keep a separate backup before confirming.
 
 ## How It Works
 
-Rathole runs a standard Reticulum transport node. On startup, it monkeypatches `Transport.inbound()` — the single entry point for all inbound packets in RNS — to insert a security filter pipeline.
+Rathole wraps `Transport.inbound()` and, when available, `Transport.path_request_handler()` in the Python RNS process it starts. A blackhole check precedes the global packet-rate, byte-rate and size filters. Packets then enter an announce, path-request, link-request or data pipeline.
 
-Every inbound packet passes through two pipeline stages:
+The first blocking verdict stops processing. A `THROTTLE` verdict currently drops the packet; it does not queue it for later delivery. If filtering raises an exception, the hook attempts to pass the packet to the original RNS handler. This fallback does not guarantee continued service or delivery.
 
-1. **Global pipeline** (all packets): Interface Rate Limit → Bandwidth Cap → Packet Size
-2. **Type-specific pipeline**: Announce, Path Request, Link Request, or Data filters
-
-The first non-ACCEPT verdict drops the packet (short-circuit). If any filter errors, Rathole fails open — the original RNS handler processes the packet normally. Rathole can never break your node.
-
-All configuration is done through the CLI wizard (`rat setup`) and TUI. You can also use `rat config set` and `rat filters` for live tuning.
+Header-derived hashes are unverified at this stage. IFAC packets skip destination-hash extraction, and announce-size estimates are heuristic. Treat alerts and reputation scores as observations to investigate, not authenticated evidence that a peer misbehaved.
 
 ## I2P Gateway Mode
 
-I2P gives your node a publicly reachable address without revealing your IP. Rathole's setup wizard handles the entire flow:
+The setup wizard can help install/start `i2pd`, configure its SAM interface and add an RNS I2P interface. Installation support depends on the host's package manager; follow the wizard's manual instructions if automatic setup is unavailable. Wait for the I2P interface to have a B32 address before publishing it.
 
-1. Installs and configures `i2pd` (if not already present)
-2. Creates an I2P tunnel for your Reticulum transport node
-3. Optionally publishes your I2P address (B32) to the gateway registry
+I2P peering avoids a direct TCP connection between the two Reticulum peers. It does not make every connection Rathole uses anonymous. A TCP bootstrap connection such as `rns.ratspeak.org:4242` exposes your source IP to that peer; the default HTTPS registry discovery request exposes it to the registry endpoint.
 
-`NOTE: To ensure you are publishing on the registry, connect via TCP to rns.ratspeak.org:4242 once your I2P client is running. You can only be published if you are seen by the registry node, which may be difficult without TCP until I2P is bootstrapped.`
+Registry publishing sends a signed `rathole.gateway` announce containing the I2P address, optional node name and capabilities, version and node mode. The announce must reach the registry's Reticulum node. Discovery queries the registry over HTTPS; automatic connections require `auto_connect` and are suppressed in dry-run mode.
 
-Other Rathole nodes with registry enabled will discover your gateway automatically and connect. You can run a public transport gateway from your couch.
+The client defaults are a five-minute announce interval and ten-minute discovery interval. Expiry is a server policy, not a client guarantee. To stop automatic publication, disable `registry.publish` in the file and reload. `rat registry deregister` alone clears the current publication state but does not disable future scheduled announces or immediately delete a server record.
 
-The registry uses signed registrations (Ed25519, via your node's transport identity) and entries expire after 30 minutes without a heartbeat. No IP addresses are stored or transmitted — only I2P B32 addresses.
+## Filters and Their Limits
 
-## Security Guards
-
-| # | Guard | Pipeline | Protects Against | Default |
+| # | Filter | Pipeline | Check | Base setting |
 |---|-------|----------|-----------------|---------|
-| G1 | Interface Rate Limit | Global | Packet-count floods | 10.0 pkts/s |
-| G2 | Bandwidth Cap | Global | Byte-rate exhaustion | 500 KB/s |
+| G1 | Interface Rate Limit | Global | Packets per interface | 10.0 pkts/s |
+| G2 | Bandwidth Cap | Global | Bytes per interface | 500 KB/s |
 | G3 | Packet Size | Global | Oversized packets | 600 bytes max |
-| A1 | Allow/Deny Lists | Announce | Manual policy overrides | Hash lists |
-| A2 | Hop Ceiling | Announce | Deep-topology amplification | 32 hops max |
-| A3 | Announce Size | Announce | App-data amplification | 500 bytes max |
-| A4 | Rate Limiter | Announce | Per-peer announce floods | 15 burst, 0.5/s refill |
-| A5 | Churn Dampening | Announce | Identity churn (RFC 2439-style) | Off by default |
+| A1 | Allow/Deny Lists | Announce | Hash allow/deny match | Empty lists |
+| A2 | Hop Ceiling | Announce | Header hop count | 32 hops max |
+| A3 | Announce Size | Announce | Estimated app-data size | 500 bytes max |
+| A4 | Rate Limiter | Announce | Per-destination announce rate | 15 burst, 0.5/s refill |
+| A5 | Churn Dampening | Announce | Repeated announces per destination | Off by default |
 | A6 | Anomaly Detector | Announce | High announce:traffic ratio | 100.0 max ratio |
-| P1 | Path Request Filter | Path | Path floods + scanning | 30/min |
-| L1 | Link Request Filter | Link | ECDH flood + Slowloris | 10 burst, 50 max pending |
-| D1 | Resource Guard | Data | Resource/compression bombs | 16 MB max |
+| P1 | Path Request Filter | Path | Request count and unique destinations | 30/min |
+| L1 | Link Request Filter | Link | Request rate and approximate pending count | 10 burst, 50 count limit |
+| D1 | Resource Guard | Data | Incomplete resource inspection | 16 MiB configured limit |
 
-Every guard can be toggled and tuned live:
+These are base settings; presets and your file can override them. Allow-list matches only bypass the deny check in that filter, not the rest of the pipeline. Link/resource counters decay periodically rather than tracking completion exactly. The raw hook does not populate resource subtypes, and the resource guard compares raw packet length rather than decoded transfer size: **do not rely on it to enforce a transfer-size limit or prevent decompression bombs**.
+
+Filters can be toggled and tuned live:
 
 ```bash
 rat filters toggle rate_limit on
@@ -129,29 +109,33 @@ rat filters set rate_limit burst 20
 
 ## Presets
 
+These describe the preset values before the setup wizard applies your choices.
+
 | Preset | Mode | Philosophy |
 |--------|------|-----------|
 | **observe** | Gateway | Dry-run, generous limits, 24h learning, publishes to registry |
-| **balanced** | Gateway | Active defense, fair limits, adaptive learning, publishes to registry |
-| **fortress** | Gateway | Auto-blackhole, tight limits, defensive correlator |
-| **relaxed** | Client | Dry-run, minimal interference, auto-connects to gateways |
-| **standard** | Client | Good defaults, adaptive learning, auto-connects to gateways |
+| **balanced** | Gateway | Active filtering, moderate limits, baseline monitoring, publishes to registry |
+| **fortress** | Gateway | Auto-blackhole, tight limits, additional correlator logging |
+| **relaxed** | Client | Dry-run, generous limits, discovery enabled; auto-connect waits until dry-run is off |
+| **standard** | Client | Active filtering, baseline monitoring, auto-connects to gateways |
 | **strict** | Client | Tight rate limits, active monitoring, manual peering only |
 | **lora** | Either | Ultra-tight bandwidth for LoRa gateways, registry disabled |
 
-Switch presets live: `rat config preset apply balanced`
+Inspect a preset with `rat config preset --preset-action diff --preset-name balanced` and apply it with `rat config preset --preset-action apply --preset-name balanced`. Applying a preset replaces the in-memory configuration, including general and registry settings. Review the result with `rat config show`.
+
+Live changes are not written back to the TOML file. Edit the file to keep them across reloads and restarts; settings that create listeners or select data paths can require a restart.
 
 ## Intelligence
 
-**Reputation Engine** — Every identity scores 0.0–1.0. Good behavior raises the score; bad behavior lowers it 3x faster (accept reward 0.005, drop penalty 0.015). Higher reputation = larger rate limit buckets. Penalties only apply to announce packets — relayed traffic is never falsely penalized.
+**Reputation** assigns scores between 0 and 1 to tracked hashes. Base rewards are 0.005 per accepted verdict, with a 0.015 drop penalty for announces. Rate-limit bucket sizes do not currently use those scores. Raw announce attribution happens before signature validation, so scores can be misleading; auto-blackholing is off in the base configuration.
 
-**Adaptive Learning** — Records per-interface traffic baselines. After learning, auto-sets alert and block thresholds based on standard deviations from your actual traffic. Manual config always overrides.
+**Adaptive monitoring** collects interface counters and computes rolling statistics. The current filter implementations do not consume its calculated thresholds, so enabling it does not automatically tune enforcement.
 
-**Attack Correlator** — Runs every 30s scanning for cross-filter patterns: Sybil clusters, destination scanning, Slowloris links, amplification attacks. In defensive mode, auto-responds with reputation penalties and threshold tightening.
+**Correlation** checks for traffic patterns at a default 30-second interval. Its current defensive response methods log findings and recommendations; they do not tighten filter thresholds automatically.
 
 ## CLI Reference
 
-```bash
+```text
 # Setup
 rat setup                               # interactive wizard
 rat run                                 # start daemon + TUI (shortcut)
@@ -172,9 +156,6 @@ rat filters set rate_limit burst 20     # change parameter
 
 # Reputation
 rat reputation                          # all identities
-rat reputation <hash>                   # detail for one identity
-rat reputation pin <hash> 1.0           # pin score
-rat reputation unpin <hash>             # remove pin
 
 # Blackhole
 rat blackhole list                      # view blackholed identities
@@ -184,8 +165,8 @@ rat blackhole remove -i <hash>
 # Config
 rat config show [section]               # view config
 rat config set reputation accept_reward 0.01
-rat config preset list                  # see presets + diffs
-rat config preset apply balanced        # switch preset
+rat config preset --preset-action list  # list presets
+rat config preset --preset-action apply --preset-name balanced
 rat dry-run [on|off]                    # toggle dry-run
 rat reload                              # hot-reload config
 
@@ -197,9 +178,9 @@ rat network remove <name>               # remove interface
 # Registry
 rat registry                            # registry status
 rat registry discover                   # show discovered gateways
-rat registry connect <hash>             # connect to gateway
-rat registry register                   # publish to registry
-rat registry deregister                 # remove from registry
+rat registry connect <hash>             # add a gateway interface
+rat registry register                   # queue a gateway announce
+rat registry deregister                 # clear current publication state (see above)
 
 # Lifecycle
 rat shutdown                            # stop the daemon
@@ -209,9 +190,11 @@ rat reset                               # full reset (config + state)
 rat --json peers                        # JSON output for scripting
 ```
 
+The current `reputation` parser does not reliably pass identity arguments to `pin` or `unpin`, and `rat reputation <hash>` is not accepted. Use `rat reputation` to inspect the full table; the per-identity CLI forms need a code fix.
+
 ## TUI Dashboard
 
-`rathole -c rathole.toml` launches a full-screen terminal dashboard. 8 tabs, live updates, preset switching, filter tuning, registry controls — all without leaving the terminal.
+`rathole -c rathole.toml` launches a full-screen terminal dashboard. It shows traffic, filter and registry state, with controls for live configuration.
 
 Run standalone against a headless daemon: `rathole-tui`
 
@@ -219,30 +202,26 @@ Run standalone against a headless daemon: `rathole-tui`
 
 ### Linux (systemd)
 
-```bash
-sudo cp deploy/rathole.service /etc/systemd/system/
-sudo systemctl enable --now rathole
-```
+[`deploy/rathole.service`](deploy/rathole.service) is a template, not a complete installation. Before enabling it:
+
+1. Create the `rathole` service user/group and a writable `/var/lib/rathole` directory.
+2. Install Rathole in a virtual environment readable by that user. Set `ExecStart` to its actual `bin/rathole` path; the template's `/usr/bin/rathole` is only a placeholder.
+3. Create `/etc/rathole/rathole.toml`. Set `general.reticulum_config_path` to `/var/lib/rathole/reticulum`, `general.state_file` to `/var/lib/rathole/state.json`, `general.control_socket` to `/var/lib/rathole/control.sock` and `eventstore.db_path` to `/var/lib/rathole/events.db`.
+4. Configure the dedicated Reticulum directory and ensure the service user can read/write it. The unit's `ProtectHome` prevents using a personal home directory. Its `PrivateTmp` also makes `/tmp/rathole.sock` unsuitable for host CLI access.
+5. Copy the adjusted unit to `/etc/systemd/system/rathole.service`, run `sudo systemctl daemon-reload`, then `sudo systemctl enable --now rathole`. Inspect `sudo journalctl -u rathole` and query it as the service user with the explicit control-socket path.
+
+Keep control-socket access restricted to administrators. Do not run setup or reset against a shared production Reticulum directory.
 
 ### Docker
 
-```bash
-cd deploy && docker compose up -d
-```
+The compose template uses host networking and expects a real `deploy/rathole.toml` file, which is not supplied. Copy `rathole.example.toml` there, then set the same `/var/lib/rathole` paths listed above. Set `general.control_socket` to `/var/lib/rathole/control.sock`. Configure the dedicated Reticulum directory in the persisted state volume before using it as a gateway.
+
+Build and start from `deploy/` with `docker compose up -d --build`. The image runs as the `rathole` user; the state volume must be writable by it. Host networking is a deployment requirement to evaluate on your Docker host, not a promise of identical behavior on every desktop platform. Metrics are disabled by default and bind to loopback when enabled; publishing port 9777 does not itself enable them.
 
 ## Configuration
 
-See [`rathole.example.toml`](rathole.example.toml) for the fully commented reference. All settings are accessible via `rat config show` and editable live via `rat config set`.
-
-
-## Future
-
-If there's interest: encrypted messaging over LXMF, a proper GUI, LoRa and other interface support. This is a starting point.
-
-## Disclaimer
-
-Rathole is a proof of concept and was vibed together — built quickly, tested lightly, and still early. It monkeypatches RNS internals, which means it could break with future Reticulum updates. Pin your RNS version. Use at your own risk. Don't get angry when there are bugs.
+See [`rathole.example.toml`](rathole.example.toml) for the commented configuration. `rat config show` reports the daemon's in-memory settings. Live filter changes and presets are useful for tuning, but persist the desired values in the file before a restart. Keep snapshots of known-working configurations and dependency versions.
 
 ## License
 
-[GPL-3.0](LICENSE) · [Ratspeak](https://ratspeak.org)
+[GPL-3.0-or-later](LICENSE) · [Ratspeak](https://ratspeak.org)
